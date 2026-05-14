@@ -314,7 +314,7 @@ def build_loops(ip212_list, ip101_list, ipr_list, ppkp_pos):
 # ============================================================================
 
 def draw_titleblock(msp, floor_no):
-    """Рисует упрощённую рамку и штамп под чертежом."""
+    """Рисует рамку чертежа и основную надпись по ГОСТ 21.1101 (форма 3)."""
     # Внешняя рамка
     margin = 500
     msp.add_lwpolyline(
@@ -332,6 +332,45 @@ def draw_titleblock(msp, floor_no):
     ).set_placement(
         (FLOOR_W / 2, FLOOR_H + margin + 800), align=TextEntityAlignment.BOTTOM_CENTER
     )
+
+    # ---- Основная надпись (штамп) по ГОСТ 21.1101 форма 3 ----
+    # Размещаем штамп в правом нижнем углу под рамкой
+    sx = FLOOR_W + margin - 18500   # 185 мм при М1:100 = 18500 мм в модели
+    sy = -margin - 5500             # 55 мм высота штампа
+    sw, sh = 18500, 5500
+    # Внешний контур
+    msp.add_lwpolyline(
+        [(sx, sy), (sx + sw, sy), (sx + sw, sy + sh), (sx, sy + sh), (sx, sy)],
+        dxfattribs={"layer": "АПС_План"},
+    )
+    # Горизонтальные линии (форма 3 имеет 4 ряда)
+    for k in (1, 2, 3, 4):
+        y = sy + sh * k / 5
+        msp.add_line((sx, y), (sx + sw, y), dxfattribs={"layer": "АПС_План"})
+    # Вертикальные разделители — упрощённо: одна линия 65 мм от левого края
+    msp.add_line((sx + 6500, sy), (sx + 6500, sy + sh),
+                 dxfattribs={"layer": "АПС_План"})
+
+    # Текстовое заполнение
+    fields = [
+        (0.5, 4.5, "Шифр: АПС-АДМ-01"),
+        (0.5, 3.5, "Стадия: РД"),
+        (0.5, 2.5, f"Лист: {floor_no} плана"),
+        (0.5, 1.5, "Листов: 2"),
+        (0.5, 0.5, "Заказчик: __________"),
+        (7.0, 4.5, "Автоматическая пожарная сигнализация"),
+        (7.0, 3.5, "Административное здание, S = 491,1 м²"),
+        (7.0, 2.5, f"План АПС {floor_no}-го этажа. М 1:100"),
+        (7.0, 1.5, "Разработал: ___________"),
+        (7.0, 0.5, "Проверил:   ___________"),
+    ]
+    for fx, fy, txt in fields:
+        msp.add_text(
+            txt, dxfattribs={"layer": "АПС_Подписи", "height": 320}
+        ).set_placement(
+            (sx + fx * 1000, sy + fy * sh / 5),
+            align=TextEntityAlignment.MIDDLE_LEFT,
+        )
 
 
 def draw_legend(msp, x0, y0):
