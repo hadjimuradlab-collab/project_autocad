@@ -12,6 +12,7 @@ DXF-генератор плана автоматической пожарной 
 Размеры символов даны для масштаба 1:100 (например, Ø5 мм на печати = 500 мм в чертеже).
 """
 import math
+import os
 import ezdxf
 from ezdxf.enums import TextEntityAlignment
 
@@ -40,6 +41,7 @@ TAG_OFFSET = 700    # смещение подписи от символа
 
 # Слои и их цвета (AutoCAD Color Index)
 LAYERS = {
+    "АПС_Архитектура": {"color": 8,  "linetype": "CONTINUOUS"},  # серый — растровая подложка
     "АПС_План":       {"color": 7,  "linetype": "CONTINUOUS"},  # белый/чёрный
     "АПС_ИП":         {"color": 1,  "linetype": "CONTINUOUS"},  # красный
     "АПС_ИПР":        {"color": 5,  "linetype": "CONTINUOUS"},  # синий
@@ -69,6 +71,20 @@ LOOP_COLORS = {
 FLOOR_W = 30.0 * SCALE
 FLOOR_H = 21.0 * SCALE
 
+# Архитектурная подложка (растр архитектурного плана).
+# Файлы JPG расположены в корне репозитория; путь относительный, чтобы DXF
+# открывался и в директории проекта.
+FLOOR_BG = {
+    1: "1 этаж .jpg",
+    2: "2 этаж .jpg",
+}
+# Размеры подложки совмещаются с FLOOR_W × FLOOR_H. Если архитектурный план
+# содержит экспликацию справа, при необходимости откорректировать BG_WIDTH/HEIGHT
+# и BG_OFFSET для точной привязки осей.
+BG_WIDTH = FLOOR_W
+BG_HEIGHT = FLOOR_H
+BG_OFFSET = (0, 0)
+
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -90,6 +106,35 @@ def setup_document():
             doc.layers.add(name, color=props["color"], linetype=props["linetype"])
 
     return doc
+
+
+def attach_floor_background(doc, msp, floor_no):
+    """Вставляет архитектурный план как растровую подложку (DXF IMAGE).
+
+    Изображение `1 этаж .jpg` / `2 этаж .jpg` берётся из текущей директории
+    проекта. Размеры подложки заданы FLOOR_W × FLOOR_H (мм). При необходимости
+    подложка калибруется в AutoCAD после открытия чертежа.
+    """
+    bg = FLOOR_BG.get(floor_no)
+    if not bg or not os.path.exists(bg):
+        print(f"  [предупреждение] архитектурная подложка не найдена: {bg}")
+        return
+
+    try:
+        from PIL import Image
+        with Image.open(bg) as im:
+            px_w, px_h = im.size
+    except Exception:
+        px_w, px_h = 1280, 839  # ориентировочные размеры исходных JPG
+
+    image_def = doc.add_image_def(filename=bg, size_in_pixel=(px_w, px_h))
+    msp.add_image(
+        insert=BG_OFFSET,
+        size_in_units=(BG_WIDTH, BG_HEIGHT),
+        image_def=image_def,
+        rotation=0,
+        dxfattribs={"layer": "АПС_Архитектура"},
+    )
 
 
 def draw_room_outline(msp, x, y, w, h, name=""):
@@ -355,7 +400,10 @@ def generate_floor(floor_no, ip212, ip101, ipr, sonata, prizma, exit_signs,
     doc = setup_document()
     msp = doc.modelspace()
 
-    # 1. Внешний контур этажа (упрощённый прямоугольник)
+    # 0. Архитектурная подложка (растр плана этажа)
+    attach_floor_background(doc, msp, floor_no)
+
+    # 1. Внешний контур этажа (упрощённый прямоугольник — рамка над подложкой)
     msp.add_lwpolyline(
         [(0, 0), (FLOOR_W, 0), (FLOOR_W, FLOOR_H), (0, FLOOR_H), (0, 0)],
         dxfattribs={"layer": "АПС_План"},
