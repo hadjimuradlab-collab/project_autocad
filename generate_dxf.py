@@ -12,6 +12,7 @@ DXF-генератор плана автоматической пожарной 
 Размеры символов даны для масштаба 1:100 (например, Ø5 мм на печати = 500 мм в чертеже).
 """
 import math
+import os
 import ezdxf
 from ezdxf.enums import TextEntityAlignment
 
@@ -40,6 +41,7 @@ TAG_OFFSET = 700    # смещение подписи от символа
 
 # Слои и их цвета (AutoCAD Color Index)
 LAYERS = {
+    "АПС_Архитектура": {"color": 8,  "linetype": "CONTINUOUS"},  # серый — растровая подложка
     "АПС_План":       {"color": 7,  "linetype": "CONTINUOUS"},  # белый/чёрный
     "АПС_ИП":         {"color": 1,  "linetype": "CONTINUOUS"},  # красный
     "АПС_ИПР":        {"color": 5,  "linetype": "CONTINUOUS"},  # синий
@@ -69,6 +71,20 @@ LOOP_COLORS = {
 FLOOR_W = 30.0 * SCALE
 FLOOR_H = 21.0 * SCALE
 
+# Архитектурная подложка (растр архитектурного плана).
+# Файлы JPG расположены в корне репозитория; путь относительный, чтобы DXF
+# открывался и в директории проекта.
+FLOOR_BG = {
+    1: "1 этаж .jpg",
+    2: "2 этаж .jpg",
+}
+# Размеры подложки совмещаются с FLOOR_W × FLOOR_H. Если архитектурный план
+# содержит экспликацию справа, при необходимости откорректировать BG_WIDTH/HEIGHT
+# и BG_OFFSET для точной привязки осей.
+BG_WIDTH = FLOOR_W
+BG_HEIGHT = FLOOR_H
+BG_OFFSET = (0, 0)
+
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -90,6 +106,35 @@ def setup_document():
             doc.layers.add(name, color=props["color"], linetype=props["linetype"])
 
     return doc
+
+
+def attach_floor_background(doc, msp, floor_no):
+    """Вставляет архитектурный план как растровую подложку (DXF IMAGE).
+
+    Изображение `1 этаж .jpg` / `2 этаж .jpg` берётся из текущей директории
+    проекта. Размеры подложки заданы FLOOR_W × FLOOR_H (мм). При необходимости
+    подложка калибруется в AutoCAD после открытия чертежа.
+    """
+    bg = FLOOR_BG.get(floor_no)
+    if not bg or not os.path.exists(bg):
+        print(f"  [предупреждение] архитектурная подложка не найдена: {bg}")
+        return
+
+    try:
+        from PIL import Image
+        with Image.open(bg) as im:
+            px_w, px_h = im.size
+    except Exception:
+        px_w, px_h = 1280, 839  # ориентировочные размеры исходных JPG
+
+    image_def = doc.add_image_def(filename=bg, size_in_pixel=(px_w, px_h))
+    msp.add_image(
+        insert=BG_OFFSET,
+        size_in_units=(BG_WIDTH, BG_HEIGHT),
+        image_def=image_def,
+        rotation=0,
+        dxfattribs={"layer": "АПС_Архитектура"},
+    )
 
 
 def draw_room_outline(msp, x, y, w, h, name=""):
@@ -269,7 +314,7 @@ def build_loops(ip212_list, ip101_list, ipr_list, ppkp_pos):
 # ============================================================================
 
 def draw_titleblock(msp, floor_no):
-    """Рисует упрощённую рамку и штамп под чертежом."""
+    """Рисует рамку чертежа и основную надпись по ГОСТ 21.1101 (форма 3)."""
     # Внешняя рамка
     margin = 500
     msp.add_lwpolyline(
@@ -287,6 +332,45 @@ def draw_titleblock(msp, floor_no):
     ).set_placement(
         (FLOOR_W / 2, FLOOR_H + margin + 800), align=TextEntityAlignment.BOTTOM_CENTER
     )
+
+    # ---- Основная надпись (штамп) по ГОСТ 21.1101 форма 3 ----
+    # Размещаем штамп в правом нижнем углу под рамкой
+    sx = FLOOR_W + margin - 18500   # 185 мм при М1:100 = 18500 мм в модели
+    sy = -margin - 5500             # 55 мм высота штампа
+    sw, sh = 18500, 5500
+    # Внешний контур
+    msp.add_lwpolyline(
+        [(sx, sy), (sx + sw, sy), (sx + sw, sy + sh), (sx, sy + sh), (sx, sy)],
+        dxfattribs={"layer": "АПС_План"},
+    )
+    # Горизонтальные линии (форма 3 имеет 4 ряда)
+    for k in (1, 2, 3, 4):
+        y = sy + sh * k / 5
+        msp.add_line((sx, y), (sx + sw, y), dxfattribs={"layer": "АПС_План"})
+    # Вертикальные разделители — упрощённо: одна линия 65 мм от левого края
+    msp.add_line((sx + 6500, sy), (sx + 6500, sy + sh),
+                 dxfattribs={"layer": "АПС_План"})
+
+    # Текстовое заполнение
+    fields = [
+        (0.5, 4.5, "Шифр: АПС-АДМ-01"),
+        (0.5, 3.5, "Стадия: РД"),
+        (0.5, 2.5, f"Лист: {floor_no} плана"),
+        (0.5, 1.5, "Листов: 2"),
+        (0.5, 0.5, "Заказчик: __________"),
+        (7.0, 4.5, "Автоматическая пожарная сигнализация"),
+        (7.0, 3.5, "Административное здание, S = 491,1 м²"),
+        (7.0, 2.5, f"План АПС {floor_no}-го этажа. М 1:100"),
+        (7.0, 1.5, "Разработал: ___________"),
+        (7.0, 0.5, "Проверил:   ___________"),
+    ]
+    for fx, fy, txt in fields:
+        msp.add_text(
+            txt, dxfattribs={"layer": "АПС_Подписи", "height": 320}
+        ).set_placement(
+            (sx + fx * 1000, sy + fy * sh / 5),
+            align=TextEntityAlignment.MIDDLE_LEFT,
+        )
 
 
 def draw_legend(msp, x0, y0):
@@ -355,7 +439,10 @@ def generate_floor(floor_no, ip212, ip101, ipr, sonata, prizma, exit_signs,
     doc = setup_document()
     msp = doc.modelspace()
 
-    # 1. Внешний контур этажа (упрощённый прямоугольник)
+    # 0. Архитектурная подложка (растр плана этажа)
+    attach_floor_background(doc, msp, floor_no)
+
+    # 1. Внешний контур этажа (упрощённый прямоугольник — рамка над подложкой)
     msp.add_lwpolyline(
         [(0, 0), (FLOOR_W, 0), (FLOOR_W, FLOOR_H), (0, FLOOR_H), (0, 0)],
         dxfattribs={"layer": "АПС_План"},
