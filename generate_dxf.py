@@ -41,6 +41,7 @@ TAG_OFFSET = 700    # смещение подписи от символа
 # Слои и их цвета (AutoCAD Color Index)
 LAYERS = {
     "АПС_План":       {"color": 7,  "linetype": "CONTINUOUS"},  # белый/чёрный
+    "АПС_ЗКПС":       {"color": 8,  "linetype": "CONTINUOUS"},  # зоны контроля
     "АПС_ИП":         {"color": 1,  "linetype": "CONTINUOUS"},  # красный
     "АПС_ИПР":        {"color": 5,  "linetype": "CONTINUOUS"},  # синий
     "АПС_Оповещение": {"color": 2,  "linetype": "CONTINUOUS"},  # жёлтый
@@ -300,6 +301,7 @@ def draw_legend(msp, x0, y0):
         ("Табло «Выход»",           "exit"),
         ("ППКП Гранит-12",          "ppkp"),
         ("Шлейф сигнализации",      "loop"),
+        ("Граница ЗКПС",            "zkps"),
     ]
     msp.add_text(
         "Условные обозначения:",
@@ -329,6 +331,21 @@ def draw_legend(msp, x0, y0):
                 [(cx - 500, cy), (cx + 500, cy)],
                 dxfattribs={"layer": "АПС_Шлейфы", "linetype": "DASHDOT"},
             )
+        elif kind == "zkps":
+            # Прямоугольник со штриховкой для ЗКПС в легенде
+            zx1, zy1, zx2, zy2 = cx - 500, cy - 250, cx + 500, cy + 250
+            msp.add_lwpolyline(
+                [(zx1, zy1), (zx2, zy1), (zx2, zy2), (zx1, zy2), (zx1, zy1)],
+                dxfattribs={"layer": "АПС_ЗКПС", "linetype": "DASHED", "color": 30},
+            )
+            hatch = msp.add_hatch(dxfattribs={"layer": "АПС_ЗКПС", "color": 30})
+            try:
+                hatch.set_pattern_fill("ANSI31", scale=200.0, color=30)
+            except Exception:
+                pass
+            hatch.paths.add_polyline_path(
+                [(zx1, zy1), (zx2, zy1), (zx2, zy2), (zx1, zy2)], is_closed=True
+            )
         msp.add_text(
             text, dxfattribs={"layer": "АПС_Подписи", "height": TEXT_H}
         ).set_placement((cx + 1500, cy), align=TextEntityAlignment.MIDDLE_LEFT)
@@ -337,6 +354,70 @@ def draw_legend(msp, x0, y0):
 # ============================================================================
 # ГЕНЕРАЦИЯ ЭТАЖА
 # ============================================================================
+
+def draw_zkps_zones(msp, zones):
+    """Штриховка зон контроля пожарной сигнализации (ЗКПС).
+
+    Для каждой ЗКПС рисуется:
+    1. Контур зоны (полилиния) на слое АПС_ЗКПС
+    2. Штриховка ANSI-паттерном с цветом зоны
+    3. Текстовая метка ID зоны в углу прямоугольника
+    """
+    for zone in zones:
+        x1, y1, x2, y2 = zone["rect"]
+        # координаты в метрах → мм
+        pts = [(m(x1), m(y1)), (m(x2), m(y1)),
+               (m(x2), m(y2)), (m(x1), m(y2)), (m(x1), m(y1))]
+
+        # 1. Контур зоны — толстой пунктирной линией
+        msp.add_lwpolyline(pts, dxfattribs={
+            "layer": "АПС_ЗКПС",
+            "color": zone["color"],
+            "linetype": "DASHED",
+            "lineweight": 50,
+        })
+
+        # 2. Штриховка
+        hatch = msp.add_hatch(dxfattribs={
+            "layer": "АПС_ЗКПС",
+            "color": zone["color"],
+        })
+        try:
+            hatch.set_pattern_fill(
+                zone["pattern"],
+                scale=zone["scale"],
+                angle=zone["angle"],
+                color=zone["color"],
+            )
+        except Exception:
+            # Если паттерн не найден — fallback на ANSI31
+            hatch.set_pattern_fill("ANSI31", scale=zone["scale"])
+        hatch.paths.add_polyline_path(pts, is_closed=True)
+
+        # 3. Метка ЗКПС — в верхнем-левом углу зоны, на белой подложке
+        label_x = m(x1) + 500
+        label_y = m(y2) - 700
+
+        # Белый прямоугольник-подложка (на слое АПС_План, цвет 255 — белый)
+        label_w, label_h = 2200, 700
+        msp.add_lwpolyline(
+            [(label_x - 100, label_y - label_h),
+             (label_x + label_w, label_y - label_h),
+             (label_x + label_w, label_y + 100),
+             (label_x - 100, label_y + 100),
+             (label_x - 100, label_y - label_h)],
+            dxfattribs={"layer": "АПС_ЗКПС", "color": 7},
+            close=True,
+        )
+        msp.add_text(
+            zone["id"],
+            dxfattribs={
+                "layer": "АПС_Подписи",
+                "height": 550,
+                "color": zone["color"],
+            },
+        ).set_placement((label_x, label_y), align=TextEntityAlignment.TOP_LEFT)
+
 
 def draw_riser(msp, x, y):
     """Отметка межэтажного стояка (для 2 этажа — точка ввода шлейфов от ППКП)."""
@@ -350,6 +431,7 @@ def draw_riser(msp, x, y):
 
 def generate_floor(floor_no, ip212, ip101, ipr, sonata, prizma, exit_signs,
                    ppkp_pos=None, rip_pos=None, riser_pos=None,
+                   zkps_zones=None,
                    output="fire_alarm.dxf"):
     """Генерирует DXF-файл для одного этажа."""
     doc = setup_document()
@@ -366,6 +448,11 @@ def generate_floor(floor_no, ip212, ip101, ipr, sonata, prizma, exit_signs,
         f"Этаж {floor_no} — план оборудования АПС",
         dxfattribs={"layer": "АПС_Подписи", "height": 500},
     ).set_placement((m(0.5), FLOOR_H - 700), align=TextEntityAlignment.BOTTOM_LEFT)
+
+    # 2a. ЗКПС — штриховка зон контроля (рисуется ПЕРЕД оборудованием,
+    # чтобы символы устройств были видны поверх штриховки)
+    if zkps_zones:
+        draw_zkps_zones(msp, zkps_zones)
 
     # 3. ППКП / РИП (только 1 эт.) или стояк (только 2 эт.)
     if ppkp_pos is not None:
@@ -420,7 +507,7 @@ def generate_floor(floor_no, ip212, ip101, ipr, sonata, prizma, exit_signs,
 # ============================================================================
 
 def main():
-    # 1 этаж — с ППКП и РИП
+    # 1 этаж — с ППКП, РИП и ЗКПС 1-2
     generate_floor(
         floor_no=1,
         ip212=C.FLOOR1_IP212,
@@ -431,11 +518,12 @@ def main():
         exit_signs=C.FLOOR1_EXIT,
         ppkp_pos=(C.PPKP_GRANIT12[0], C.PPKP_GRANIT12[1]),
         rip_pos=(C.RIP_12[0], C.RIP_12[1]),
+        zkps_zones=C.ZKPS_FLOOR1,
         output="fire_alarm_floor1.dxf",
     )
 
-    # 2 этаж — ППКП не дублируется, вместо него отметка стояка над ППКП 1 этажа
-    riser_point_2 = (C.PPKP_GRANIT12[0], C.PPKP_GRANIT12[1])  # та же точка по плану
+    # 2 этаж — ППКП не дублируется, вместо него отметка стояка; ЗКПС 3-4
+    riser_point_2 = (C.PPKP_GRANIT12[0], C.PPKP_GRANIT12[1])
     generate_floor(
         floor_no=2,
         ip212=C.FLOOR2_IP212,
@@ -447,6 +535,7 @@ def main():
         ppkp_pos=None,
         rip_pos=None,
         riser_pos=riser_point_2,
+        zkps_zones=C.ZKPS_FLOOR2,
         output="fire_alarm_floor2.dxf",
     )
 
